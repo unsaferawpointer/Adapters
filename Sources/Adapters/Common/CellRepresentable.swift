@@ -1,20 +1,17 @@
 //
-//  CellPresentable.swift
-//  Adapters
+//  CellRepresentable.swift
+//  
 //
-//  Created by Anton Cherkasov on 12.05.2022.
+//  Created by Anton Cherkasov on 18.06.2022.
 //
 
 import AppKit
 
-public protocol CellModel: ItemIdentifiable {
-	var isSelectable: Bool { get set }
-}
-
+/// Represent cell of the table
 public protocol CellRepresentable: NSView {
-	associatedtype ViewModel: CellModel
-	init()
-	var model: ViewModel? { get set }
-	func setFocus()
-	var valueDidChanged: ((ViewModel.ID, [String: Any]) -> Void)? { get set }
+	associatedtype ViewModel
+	/// View model of the cell
+	var viewModel: ViewModel? { get set }
+	/// Will invoke when view model did changed
+	var valueDidChanged: ((ViewModel) -> Void)? { get set }
 }

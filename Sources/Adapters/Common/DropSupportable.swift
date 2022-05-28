@@ -7,12 +7,18 @@
 
 import AppKit
 
-enum DropOperation {
+public enum DropOperation: Hashable {
+
 	case dropOn
-	case dropIn
+	case dropAbove
+
 }
 
-protocol DropSupportable where Self: ItemIdentifiable {
+public protocol DropSupportable {
+
 	/// Can handle drop on item
-	func canHandle(operation: DropOperation, pasterboardType: NSPasteboard.PasteboardType) -> Bool
+	func canHandle(operation: DropOperation,
+				   from source: DraggingSource,
+				   with pasterboardType: NSPasteboard.PasteboardType) -> NSDragOperation
+
 }

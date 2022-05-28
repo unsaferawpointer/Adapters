@@ -35,6 +35,7 @@ struct Predicate<Target> {
 }
 
 extension Array {
+
 	mutating func move(indexes: IndexSet, to toIndex: Index) {
 		let movingData = indexes.map { self[$0] }
 		let targetIndex = toIndex - indexes.filter { $0 < toIndex }.count
@@ -43,6 +44,7 @@ extension Array {
 		}
 		insert(contentsOf: movingData, at: targetIndex)
 	}
+
 }
 
 extension Array {
