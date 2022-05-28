@@ -39,7 +39,7 @@ public final class TableViewAdapter<Cell: TableCellRepresentable>: NSObject,
 		}
 	}
 
-	public var rowHeight: CGFloat = 42.0
+	public var rowHeight: CGFloat?
 
 	// MARK: Providers
 
@@ -417,7 +417,7 @@ public final class TableViewAdapter<Cell: TableCellRepresentable>: NSObject,
 	}
 
 	public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-		return rowHeight
+		return rowHeight ?? CGFloat.greatestFiniteMagnitude
 	}
 
 	public func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
