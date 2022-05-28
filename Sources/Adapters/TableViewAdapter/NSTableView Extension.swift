@@ -9,8 +9,6 @@ import AppKit
 
 extension NSTableView {
 
-	static let noSelectionIndex = -1
-
 	var commonSelection: IndexSet {
 		if clickedRow >= 0 {
 			if selectedRowIndexes.contains(clickedRow) {

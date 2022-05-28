@@ -6,9 +6,10 @@
 //
 
 import Foundation
+import AppKit
 
 /// Reference - type proxy of group
-final class GroupProxy<GroupModel: OutlineGroupPresentable, CellModel: OutlineItemRepresentable> {
+final class GroupProxy<GroupModel: OutlineGroupRepresentable, CellModel: OutlineItemRepresentable>: NSObject {
 
 	var model: GroupModel
 	var children: [NodeProxy<CellModel>]
@@ -21,12 +22,12 @@ final class GroupProxy<GroupModel: OutlineGroupPresentable, CellModel: OutlineIt
 }
 
 /// Reference - type proxy of node
-class NodeProxy<Model: OutlineItemRepresentable> {
+class NodeProxy<CellModel: OutlineItemRepresentable>: NSObject {
 
-	var model: Model
-	var children: [NodeProxy]?
+	var model: CellModel
+	var children: [NodeProxy<CellModel>]?
 
-	init(value: Model, children: [NodeProxy]) {
+	init(value: CellModel, children: [NodeProxy<CellModel>]) {
 		self.model = value
 		self.children = children
 	}
@@ -39,7 +40,7 @@ class NodeProxy<Model: OutlineItemRepresentable> {
 		return model.isFolder
 	}
 
-	func findNode(with id: Model.ID) -> NodeProxy? {
+	func findNode(with id: CellModel.ID) -> NodeProxy? {
 		if self.model.id == id {
 			return self
 		}
@@ -52,8 +53,16 @@ class NodeProxy<Model: OutlineItemRepresentable> {
 		return nil
 	}
 
-	func isAncestor(of nodeID: Model.ID) -> Bool {
+	func isAncestor(of nodeID: CellModel.ID) -> Bool {
 		return findNode(with: nodeID) != nil
+	}
+
+}
+
+extension NodeProxy {
+
+	var id: CellModel.ID {
+		return model.id
 	}
 
 }

@@ -7,45 +7,54 @@
 
 import AppKit
 
-public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
-													 NSTableViewDataSource,
-													 NSTableViewDelegate {
+public final class TableViewAdapter<Cell: TableCellRepresentable>: NSObject,
+																  NSTableViewDataSource,
+																  NSTableViewDelegate {
+
+	private let NSTableViewDropOnIndex = -1
 
 	public typealias ViewModel = Cell.ViewModel
 	public typealias ID = Cell.ViewModel.ID
 
-	private (set) var tableView: NSTableView
+	// MARK: Private properties
 
+	private (set) var tableView: NSTableView
 	private (set) var data: [ViewModel] = []
 
-	public var allowReorder: Bool = true
-
+	// State
 	private var isEditing = false
 
-	public var selected: [ID] = [] {
+	// Cache
+	private (set) var cache: [ID: Int] = [:]
+
+	// MARK: Public properties
+
+	/// Allow to reoder table items
+	public var allowReorder: Bool = false
+
+	public var selectedIdentifiers: [ID] = [] {
 		didSet {
-			if oldValue != selected {
-				let indexes = selected.compactMap { id in
-					data.firstIndex {
-						$0.id == id
-					}
-				}
-				tableView.selectRowIndexes(IndexSet(indexes), byExtendingSelection: false)
-			}
+			let indexes = selectedIdentifiers.compactMap { cache[$0] }
+			tableView.selectRowIndexes(IndexSet(indexes), byExtendingSelection: false)
 		}
 	}
 
 	public var rowHeight: CGFloat = 42.0
 
-	public var dropProvider: (([Any], RelativeLocation<ID>?) -> Void)?
+	// MARK: Providers
+
 	public var availablePasterboardTypes: [NSPasteboard.PasteboardType]
+
+	public var dropConfiguration: DropConfiguration<ID>?
+
+	public var dropProvider: (([NSPasteboard.PasteboardType: [Data]], DraggingSource, RelativeLocation<ID>?) -> Void)?
 
 	public var dataProvider: ((ID, [String: Any]) -> Void)?
 
-	public var selectionAction: (([ID]) -> Void)?
-	public var moveAction: (([ID], RelativeLocation<ID>) -> Void)?
-	public var duplicateAction: (([ID], RelativeLocation<ID>) -> Void)?
-	public var deleteAction: (([ID]) -> Void)?
+	public var selectionProvider: (([ID]) -> Void)?
+	public var reorderProvider: (([ID], RelativeLocation<ID>) -> Void)?
+	public var itemsDidDuplicated: (([ID], RelativeLocation<ID>) -> Void)?
+	public var itemsDidDeleted: (([ID]) -> Void)?
 
 	public var commonSelection: [ID] {
 		let indexes = tableView.commonSelection
@@ -64,32 +73,33 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 	}
 
 	public func apply(newData: [ViewModel], withAnimation: Bool) {
-		let oldData = data
 
+		let oldData = data
 		let newDataSet = Set(newData)
 
 		for object in oldData {
 			if let index = newDataSet.firstIndex(of: object) {
 				let newObject = newDataSet[index]
 				if newObject.isContentEqual(to: object) == false {
-					guard let oldIndex = oldData.firstIndex(of: object) else { return }
-					if let cell = tableView.view(atColumn: 0, row: oldIndex, makeIfNecessary: false) as? Cell {
-						configure(cell, for: newObject)
-					}
+					guard let oldIndex = cache[object.id] else { return }
+					forceUpdateCell(at: oldIndex, with: newObject)
 				}
 			}
 		}
 
+		// Begin updating
 		isEditing = true
 		tableView.beginUpdates()
-		let diff = newData.difference(from: data)
+
 		var removed = IndexSet()
 		var inserted = IndexSet()
+
+		let diff = newData.difference(from: data)
 		for change in diff {
 			switch change {
-				case .remove(let offset, element: _, associatedWith: _):
+				case .remove(let offset, _, associatedWith: _):
 					removed.insert(offset)
-				case .insert(let offset, element: _, associatedWith: _):
+				case .insert(let offset, _, associatedWith: _):
 					inserted.insert(offset)
 			}
 		}
@@ -97,18 +107,31 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 		tableView.removeRows(at: removed, withAnimation: [.slideDown, .effectFade])
 		tableView.insertRows(at: inserted, withAnimation: [.slideLeft, .effectFade])
 		data = newData
+
+		// update cache
+		updateCache()
+
+		// End updating
 		tableView.endUpdates()
 		isEditing = false
 
-		let selectedIndexes = IndexSet(
-			selected.compactMap { id in
-				data.firstIndex { model in
-					model.id == id
-				}
-			}
-		)
+		let rows = selectedIdentifiers.compactMap { cache[$0] }
+		let indexSet = IndexSet(rows)
 
-		tableView.selectRowIndexes(selectedIndexes, byExtendingSelection: false)
+		tableView.selectRowIndexes(indexSet, byExtendingSelection: false)
+	}
+
+	private func updateCache() {
+		cache.removeAll()
+		for (offset, model) in data.enumerated() {
+			cache[model.id] = offset
+		}
+	}
+
+	private func forceUpdateCell(at row: Int, with model: ViewModel) {
+		if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? Cell {
+			configure(cell, for: model)
+		}
 	}
 
 	// MARK: Selection support
@@ -121,8 +144,8 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 			return
 		}
 		let selectedRows = tableView.selectedRowIndexes
-		selected = selectedRows.map { data[$0].id }
-		selectionAction?(selected)
+		selectedIdentifiers = selectedRows.map { data[$0].id }
+		selectionProvider?(selectedIdentifiers)
 	}
 
 	// MARK: NSTableViewDataSource
@@ -134,57 +157,56 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 	// MARK: Drag and Drop support
 
 	public func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-
 		let pasterboardItem = NSPasteboardItem()
-		if
-			let item = data[row] as? PasteboardWriting,
-			let pasterboardMap = item.pasterboardMap {
-			for (type, data) in pasterboardMap {
-				pasterboardItem.setData(data, forType: type)
-			}
-		}
-
-		if let indexData = try? NSKeyedArchiver.archivedData(withRootObject: row, requiringSecureCoding: true) {
-			pasterboardItem.setData(indexData, forType: .reorder)
+		setData(of: data[row], to: pasterboardItem)
+		if allowReorder {
+			setData(of: row, to: pasterboardItem)
 		}
 		return pasterboardItem
 	}
 
 	public func tableView(_ tableView: NSTableView,
-				   validateDrop info: NSDraggingInfo,
-				   proposedRow row: Int,
-				   proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+						  validateDrop info: NSDraggingInfo,
+						  proposedRow row: Int,
+						  proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
 
-		guard dropOperation == .above else { return [] }
 		tableView.draggingDestinationFeedbackStyle = .regular
-		if isLocalSource(draggingInfo: info) {
-			guard allowReorder else { return  [] }
+		let draggingSource = getDraggingSource(draggingInfo: info)
+
+		if draggingSource == .local && dropOperation == .above {
 			// Support forced drag and drop operation
 			if info.draggingSourceOperationMask == .copy {
 				info.animatesToDestination = true
 				return .copy
-			} else {
-				if hasMultiplyDraggableItem(draggingInfo: info) {
-					info.animatesToDestination = true
-				} else {
-					info.animatesToDestination = false
-					tableView.draggingDestinationFeedbackStyle = .regular
-				}
-				return .move
 			}
-		} else {
-			if data.isEmpty {
-				tableView.setDropRow(-1, dropOperation: .on)
+			guard allowReorder else {
+				return []
 			}
-			return .copy
+
+			info.animatesToDestination = hasMultiplyDraggableItem(draggingInfo: info)
+			return .move
 		}
+
+		let types = info.draggingPasteboard.types ?? []
+
+
+		guard  dropConfiguration?.canHandleDrop(types, draggingSource, dropOperation == .on ? .dropOn : .dropAbove) ?? false else {
+			return []
+		}
+
+		if data.isEmpty {
+			tableView.setDropRow(-1, dropOperation: .on)
+		}
+		return .copy
 	}
 
 	public func tableView(_ tableView: NSTableView,
 				   acceptDrop info: NSDraggingInfo,
 				   row: Int,
 				   dropOperation: NSTableView.DropOperation) -> Bool {
-		if isLocalSource(draggingInfo: info) {
+		let draggingSource = getDraggingSource(draggingInfo: info)
+		if draggingSource == .local {
+			// Support forced drag and drop operation
 			if info.draggingSourceOperationMask == .copy {
 				performInsertCopies(with: info, at: row)
 			} else if validateReorder(draggingInfo: info, dropRow: row, operation: dropOperation) {
@@ -193,16 +215,16 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 				tableView.endUpdates()
 			}
 		} else {
-			// Perform insert from outside source
-			performInsert(with: info, row: row)
+			// Perform insert from external source
+			performInsert(with: info, row: row, dropOperation: dropOperation)
 		}
 		return true
 	}
 
 	public func tableView(_ tableView: NSTableView,
-				   draggingSession session: NSDraggingSession,
-				   endedAt screenPoint: NSPoint,
-				   operation: NSDragOperation) {
+						  draggingSession session: NSDraggingSession,
+						  endedAt screenPoint: NSPoint,
+						  operation: NSDragOperation) {
 		if
 			operation == .delete,
 			let pasteboardItems = session.draggingPasteboard.pasteboardItems,
@@ -216,6 +238,23 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 	}
 
 	// MARK: Drag and Drop private functions
+
+	private func setData(of item: ViewModel, to pasterboardItem: NSPasteboardItem) {
+		guard let item = item as? DragSupportable else {
+			return
+		}
+		for type in item.availableTypes {
+			if let data = item.providedData(for: type) {
+				pasterboardItem.setData(data, forType: type)
+			}
+		}
+	}
+
+	private func setData(of row: Int, to pasterboardItem: NSPasteboardItem) {
+		if let indexData = try? NSKeyedArchiver.archivedData(withRootObject: row, requiringSecureCoding: true) {
+			pasterboardItem.setData(indexData, forType: .reorder)
+		}
+	}
 
 	private func performReoder(with draggingInfo: NSDraggingInfo, row: Int) {
 
@@ -235,38 +274,50 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 		}
 
 		let identifiers = oldIndexes.map { data[$0].id }
-		if row > 0 {
-			let index = data[row - 1].id
+
+		dropAt(row: row) { location in
+			guard let location = location else {
+				return
+			}
 			data.move(indexes: oldIndexes, to: row)
-			moveAction?(identifiers, .after(index))
-		} else if data.count > 1 {
-			let index = data[row].id
-			data.move(indexes: oldIndexes, to: row)
-			moveAction?(identifiers, .before(index))
+			updateCache()
+			reorderProvider?(identifiers, location)
 		}
 	}
 
-	private func performInsert(with draggingInfo: NSDraggingInfo, row: Int) {
-		let availableClasses = [NSString.self]
-		let pasterboard = draggingInfo.draggingPasteboard
-		print(#function)
-		guard
-			let pasterboardObjects = pasterboard.readObjects(forClasses: availableClasses),
-			pasterboardObjects.count > 0
-		else {
+	private func performInsert(with draggingInfo: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) {
+
+		let pasteboardItems = draggingInfo.draggingPasteboard.pasteboardItems ?? []
+		let draggingSource = getDraggingSource(draggingInfo: draggingInfo)
+
+		var dropData: [NSPasteboard.PasteboardType: [Data]] = [:]
+
+		for type in availablePasterboardTypes {
+			var result: [Data] = []
+			for pasterboardItem in pasteboardItems {
+				guard let data = pasterboardItem.data(forType: type) else {
+					continue
+				}
+				result.append(data)
+			}
+			if result.isEmpty == false {
+				dropData[type] = result
+			}
+		}
+
+		if dropOperation == .on {
+			let id = data[row].id
+			dropConfiguration?.dropOnProvider?(id, dropData, draggingSource)
 			return
 		}
 
-		let dropOn = (row == -1)
-		if dropOn {
-			dropProvider?(pasterboardObjects, nil)
-		} else {
-			if row > 0 {
-				let id = data[row - 1].id
-				dropProvider?(pasterboardObjects, .after(id))
-			} else if data.count > 1 {
-				let id = data[row].id
-				dropProvider?(pasterboardObjects, .before(id))
+		if dropOperation == .above {
+			dropAt(row: row) { location in
+				if let location = location {
+					dropConfiguration?.dropInProvider?(location, dropData, draggingSource)
+				} else {
+					dropConfiguration?.dropToRoot?(dropData, draggingSource)
+				}
 			}
 		}
 	}
@@ -277,19 +328,43 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 			let indexes = indexes(from: pasteboardItems)
 		{
 			let identifiers = indexes.map { data[$0].id }
-			if row > 0 {
-				let after = data[row - 1].id
-				duplicateAction?(identifiers, .after(after))
-			} else {
-				let before = data[row].id
-				duplicateAction?(identifiers, .before(before))
+			dropAt(row: row) { location in
+				guard let location = location else {
+					return
+				}
+				itemsDidDuplicated?(identifiers, location)
 			}
 		}
 	}
 
+	private func dropAt(row: Int, block: (RelativeLocation<ID>?) -> Void) {
+
+		let dropToRoot = (row == NSTableViewDropOnIndex)
+		guard dropToRoot == false else {
+			block(nil)
+			return
+		}
+		if row > 0 {
+			let id = data[row - 1].id
+			block(.after(id))
+		} else if data.count > 1 {
+			let id = data[row].id
+			block(.before(id))
+		}
+	}
+
+	private func getDraggingSource(draggingInfo info: NSDraggingInfo) -> DraggingSource {
+		if let source = info.draggingSource as? NSTableView, source === tableView {
+			return .local
+		} else if let _ = info.draggingSource {
+			return .internal
+		}
+		return .external
+	}
+
 	private func performDelete(indexes: IndexSet) {
 		let identifiers = indexes.map { data[$0].id }
-		deleteAction?(identifiers)
+		itemsDidDeleted?(identifiers)
 	}
 
 	private func hasMultiplyDraggableItem(draggingInfo info: NSDraggingInfo) -> Bool {
@@ -316,20 +391,12 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 		return result
 	}
 
-	// swiftlint:disable vertical_parameter_alignment
 	private func validateReorder(draggingInfo info: NSDraggingInfo,
 								 dropRow: Int,
 								 operation: NSTableView.DropOperation) -> Bool {
 		guard let sourceIndexSet = indexes(from: info) else { return false }
 		// If all rows are selected, they cannot be moved
 		return (sourceIndexSet.count < data.count)
-	}
-
-	private func isLocalSource(draggingInfo info: NSDraggingInfo) -> Bool {
-		if let source = info.draggingSource as? NSTableView, source === tableView {
-			return true
-		}
-		return false
 	}
 
 	// MARK: NSTableViewDelegate
@@ -370,19 +437,32 @@ public final class TableViewAdapter<Cell: CellRepresentable>: NSObject,
 
 extension TableViewAdapter {
 
-	public func scrollTo(identifier: ViewModel.ID?) {
-		guard let id = identifier else { return }
-		let index = data.firstIndex { $0.id == id }
-		guard let index = index else { return }
-		tableView.scrollRowToVisible(index)
+	public func scrollTo(identifier: ViewModel.ID?, withAnimation: Bool) {
+		guard
+			let identifier = identifier,
+			let row = cache[identifier]
+		else {
+			return
+		}
+		if withAnimation {
+			NSAnimationContext.runAnimationGroup { context in
+				context.allowsImplicitAnimation = true
+				tableView.scrollRowToVisible(row)
+			}
+		} else {
+			tableView.scrollRowToVisible(row)
+		}
 	}
 
 	public func setFocus(_ identifier: ViewModel.ID?) {
-		guard let id = identifier else { return }
-		let index = data.firstIndex { $0.id == id }
-		guard let index = index else { return }
-		if let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? Cell {
-			cell.setFocus()
+		guard
+			let identifier = identifier,
+			let row = cache[identifier]
+		else {
+			return
+		}
+		if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? Focusable {
+			cell.onFocus(true)
 		}
 	}
 
