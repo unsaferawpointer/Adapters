@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/unsaferawpointer/Collections.git",
+      "state" : {
+        "revision" : "93ba22d1208034484f3d942efc01215363da0234",
+        "version" : "0.5.0"
+      }
+    }
+  ],
+  "version" : 2
+}
